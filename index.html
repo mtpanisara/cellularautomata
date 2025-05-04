@@ -72,7 +72,7 @@ button {
 // Setup
 const scene = new THREE.Scene();
 const loader = new THREE.TextureLoader();
-loader.load('textures/sitesphere_02.jpg', function (texture) {
+loader.load('sitesphere_02.jpg', function (texture) {
   texture.mapping = THREE.EquirectangularReflectionMapping;
   scene.background = texture;
   scene.environment = texture;
