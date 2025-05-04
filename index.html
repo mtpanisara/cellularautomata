@@ -1,0 +1,1151 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Three.js Cellular Automata</title>
+<style>
+  
+body { margin: 0; overflow: hidden; }
+#info {
+   position: absolute;
+   top: 10px;
+   width: 100%;
+   text-align: center;
+   color: white;
+   background-color: rgba(0, 0, 0, 0.5);
+   padding: 5px;
+}
+button {
+   margin: 5px;
+   padding: 5px 10px;
+}
+.ruleBtn {
+   background-color: #444;
+   color: white;
+   border: 1px solid #666;
+}
+.ruleBtn.active {
+   background-color: rgb(210, 48, 153);
+   color: white;
+}
+</style>
+</head>
+<body>
+<div id="info">
+<button id="stepBtn">Step</button>
+<button id="playBtn">Play</button>
+<button id="resetBtn">Reset</button>
+<button id="exportBtn">Export GLB</button>
+<button id="exportTimelineBtn">Export Simulation Timeline</button>
+
+<span>Click to add/remove blocks</span>
+<div id="ruleButtons" style="margin-top: 8px; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;">
+   <button id="rule1" class="ruleBtn active">Conway</button>
+   <button id="rule2" class="ruleBtn">Crystal</button>
+   <button id="rule3" class="ruleBtn">Coral</button>
+   <button id="rule4" class="ruleBtn">Caves</button>
+   <button id="rule5" class="ruleBtn">Virus</button>
+   <button id="rule6" class="ruleBtn">Forest</button>
+   <button id="rule7" class="ruleBtn">Cloud</button>
+   <button id="rule8" class="ruleBtn">Maze</button>
+   <button id="rule9" class="ruleBtn">Explosion</button>
+   <button id="finalizeBtn">Process Structure</button>
+</div>
+</div>
+
+<!-- Core Three.js (must be loaded first) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<!-- Controls -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+<!-- Exporter and ZIP tools -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+
+<script>
+
+</script>
+
+<script>
+// Setup
+const scene = new THREE.Scene();
+const loader = new THREE.TextureLoader();
+loader.load('textures/sitesphere_02.jpg', function (texture) {
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  scene.background = texture;
+  scene.environment = texture;
+
+// Create a world-wrapping sphere using the same texture
+const worldGeo = new THREE.SphereGeometry(80, 64, 64);
+const worldMat = new THREE.MeshBasicMaterial({
+  map: texture,
+  side: THREE.BackSide // 🔁 Flip normals inward
+});
+const worldSphere = new THREE.Mesh(worldGeo, worldMat);
+scene.add(worldSphere);
+
+startScene(); // 🔥 start everything AFTER background loads
+});
+
+
+// Set camera position to see the taller grid
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(60, 60, 60);
+camera.lookAt(0, 0, 0);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+
+const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+directionalLight.position.set(10, 10, 10);
+scene.add(directionalLight);
+
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0); // Look at center
+controls.enableDamping = true;
+controls.dampingFactor = 0.1;
+controls.update();
+
+
+const siteData = {
+  latitude: 40.721218,
+  longitude: -74.007461,
+  siteWidthMeters: 60,
+  siteDepthMeters: 48,
+  maxHeightMeters: 70
+};
+
+setupGridFromSite(siteData);
+
+function setupGridFromSite(siteData) {
+  const metersPerCell = 5; // or whatever
+  const siteWidthMeters = siteData.siteWidthMeters;
+  const siteDepthMeters = siteData.siteDepthMeters;
+  const siteMaxHeightMeters = siteData.maxHeightMeters;
+
+  // Calculate grid size
+  gridWidth = Math.ceil(siteWidthMeters / metersPerCell);
+  gridDepth = Math.ceil(siteDepthMeters / metersPerCell);
+  gridHeight = Math.ceil(siteMaxHeightMeters / metersPerCell);
+
+  size = 1;
+  spacing = 1.2;
+
+  // Estimate average floor height based on latitude
+  const lat = siteData.latitude;
+  let averageFloorHeightMeters;
+
+  if (lat >= 35 && lat <= 45) {
+    averageFloorHeightMeters = 3; // urban
+  } else if (lat >= 20 && lat < 35) {
+    averageFloorHeightMeters = 4; // suburban
+  } else {
+    averageFloorHeightMeters = 5; // rural
+  }
+
+  // Calculate how many grid units between floors
+  floorSlabEvery = Math.ceil(averageFloorHeightMeters / metersPerCell);
+
+  // ✅ NEW: ensure at least 2 grid units spacing
+  floorSlabEvery = Math.max(2, floorSlabEvery);
+}
+
+
+// Materials - now we'll have multiple colors
+const blockMaterials = {
+   "default": new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: false }),
+   "red": new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: false }),
+   "blue": new THREE.MeshBasicMaterial({ color: 0x0000ff, wireframe: false }),
+   "green": new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: false }),
+   "yellow": new THREE.MeshBasicMaterial({ color: 0xffff00, wireframe: false }),
+   "purple": new THREE.MeshBasicMaterial({ color: 0x800080, wireframe: false }),
+   "orange": new THREE.MeshBasicMaterial({ color: 0xffa500, wireframe: false }),
+   "cyan": new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: false }),
+   "magenta": new THREE.MeshBasicMaterial({ color: 0xff00ff, wireframe: false }),
+   "lime": new THREE.MeshBasicMaterial({ color: 0x32cd32, wireframe: false }),
+   "brown": new THREE.MeshBasicMaterial({ color: 0x8b4513, wireframe: false }),
+   "pink": new THREE.MeshBasicMaterial({ color: 0xffc0cb, wireframe: false }),
+};
+const emptyMaterial = new THREE.MeshBasicMaterial({ color: 0x444444, wireframe: true });
+const floorMaterial = new THREE.MeshBasicMaterial({ color: 0x888888, wireframe: false });
+const voidMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: false, opacity: 0, transparent: true });
+
+// Create geometry once for reuse
+const geometry = new THREE.BoxGeometry(size, size, size);
+
+// Grid state and blocks
+let grid = {};
+let blocks = {};
+let blockColors = {}; // Store colors for blocks
+let collisionObjects = []; // Store floor slabs and other obstacles
+
+// Initialize empty grid
+function initGrid() {
+   grid = {};
+   blocks = {};
+   blockColors = {};
+  
+   // Clear scene except camera
+   while(scene.children.length > 0) {
+       scene.remove(scene.children[0]);
+   }
+  
+   // Create grid with empty blocks
+   for (let x = 0; x < gridWidth; x++) {
+       for (let y = 0; y < gridHeight; y++) {
+           for (let z = 0; z < gridDepth; z++) {
+               const position = x + "," + y + "," + z;
+               grid[position] = false;
+               blockColors[position] = "default";
+              
+               // Create an empty block
+               const block = new THREE.Mesh(geometry, emptyMaterial);
+               block.position.set(
+                   x * spacing - (gridWidth * spacing / 2) + spacing/2,
+                   y * spacing - (gridHeight * spacing / 2) + spacing/2,
+                   z * spacing - (gridDepth * spacing / 2) + spacing/2
+               );
+               block.userData = { position: position };
+               scene.add(block);
+               blocks[position] = block;
+           }
+       }
+   }
+  
+   // Add floor slabs with holes
+   addFloorSlabs();
+}
+
+// Create horizontal floor slabs with holes
+function addFloorSlabs() {
+   collisionObjects = [];
+  
+   // Add floor slabs every 5 units in height
+   for (let y = floorSlabEvery; y < gridHeight; y += floorSlabEvery) {
+    createFloorSlab(y);
+}
+}
+
+function createFloorSlab(yLevel) {
+   for (let x = 0; x < gridWidth; x++) {
+       for (let z = 0; z < gridDepth; z++) {
+           const posAbove = `${x},${yLevel + 1},${z}`;
+
+           // Only place tile if there's a block above
+           if (grid[posAbove]) {
+               const tile = new THREE.Mesh(
+                   new THREE.BoxGeometry(spacing, 0.1, spacing),
+                   floorMaterial
+               );
+               tile.position.set(
+                   x * spacing - (gridWidth * spacing / 2) + spacing / 2,
+                   yLevel * spacing - (gridHeight * spacing / 2) + 0.05,
+                   z * spacing - (gridDepth * spacing / 2) + spacing / 2
+               );
+               tile.userData.isObstacle = true;
+               scene.add(tile);
+               collisionObjects.push(tile);
+               blocks[`${x},${yLevel},${z}`] = tile;
+           }
+       }
+   }
+
+
+  
+   // Create holes in the floor (remove grid spaces)
+   const holeCount = 2 + Math.floor(Math.random() * 3); // 2-4 holes
+  
+   for (let i = 0; i < holeCount; i++) {
+       // Random position for hole
+       const holeX = Math.floor(Math.random() * (gridWidth - 4));
+       const holeZ = Math.floor(Math.random() * (gridDepth - 4));
+       const holeSize = 3 + Math.floor(Math.random() * 2); // 3-4 size
+      
+       // Create hole by marking these grid positions as permanent voids
+       for (let dx = 0; dx < holeSize; dx++) {
+           for (let dz = 0; dz < holeSize; dz++) {
+               const x = holeX + dx;
+               const z = holeZ + dz;
+              
+               // Ensure we're within bounds
+               if (x < gridWidth && z < gridDepth) {
+                   const position = x + "," + yLevel + "," + z;
+                  
+                   // Mark as void in the grid (not an obstacle)
+                   grid[position] = false;
+                  
+                   // Make the block invisible (void)
+                   if (blocks[position]) {
+                       blocks[position].material = voidMaterial;
+                       blocks[position].userData.isVoid = true;
+                       blocks[position].userData.isObstacle = false; // Explicitly NOT an obstacle
+                   }
+               }
+           }
+       }
+   }
+  
+   // Mark all other blocks on this level as permanent obstacles
+   for (let x = 0; x < gridWidth; x++) {
+       for (let z = 0; z < gridDepth; z++) {
+           const position = x + "," + yLevel + "," + z;
+          
+           // If not already marked as a void
+           if (blocks[position] && !blocks[position].userData.isVoid) {
+               // Mark as an obstacle in the grid
+               grid[position] = false;
+               blocks[position].material = floorMaterial;
+               blocks[position].userData.isObstacle = true;
+           }
+       }
+   }
+}
+
+function exportSimulationTimeline(totalFrames = 20, frameInterval = 500) {
+    console.log("Starting simulation export...");
+    const exporter = new THREE.GLTFExporter();
+    const zip = new JSZip();
+    let currentFrame = 0;
+
+    const intervalId = setInterval(() => {
+        if (currentFrame >= totalFrames) {
+            clearInterval(intervalId);
+            console.log(`Finished all ${totalFrames} frames.`);
+            zip.generateAsync({ type: "blob" }).then(blob => {
+                saveAs(blob, "simulation_timeline.zip");
+            });
+            return;
+        }
+
+        // Step the simulation
+        step();
+
+        // Build merged scene
+        const exportScene = new THREE.Scene();
+        const basicMat = new THREE.MeshStandardMaterial({ color: 0x999999 });
+        const geometries = [];
+
+        for (let pos in blocks) {
+            if (!grid[pos]) continue;
+            const original = blocks[pos];
+            if (!original) continue;
+
+            const geo = new THREE.BoxGeometry(1, 1, 1);
+            geo.applyMatrix4(new THREE.Matrix4().compose(
+                original.position,
+                original.quaternion,
+                original.scale
+            ));
+            geometries.push(geo);
+        }
+
+        if (geometries.length > 0) {
+            const merged = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries);
+            const mesh = new THREE.Mesh(merged, basicMat);
+            exportScene.add(mesh);
+        }
+
+        // Export to GLB
+        exporter.parse(exportScene, result => {
+            const fileName = `simulation_${String(currentFrame + 1).padStart(4, '0')}.glb`;
+            zip.file(fileName, result);
+            console.log(`Exported frame: ${fileName}`);
+        }, { binary: true });
+
+        currentFrame++;
+    }, frameInterval);
+}
+
+
+// Toggle block state
+function toggleBlock(position) {
+   if (grid[position] !== undefined) {
+       // Don't allow toggling obstacles
+       if (blocks[position].userData.isObstacle) {
+           return;
+       }
+      
+       // Allow toggling void blocks (holes)
+       grid[position] = !grid[position];
+       updateBlock(position);
+   }
+}
+
+// Update block appearance
+function updateBlock(position) {
+   const block = blocks[position];
+   if (!block || block.userData.isObstacle) return;
+
+   if (grid[position]) {
+       const colorName = blockColors[position] || "default";
+       const baseMaterial = blockMaterials[colorName];
+       const baseColor = baseMaterial.color.getHex();
+
+       // Calculate neighbor-based intensity
+       const [x, y, z] = position.split(",").map(Number);
+       const directions = [
+           [1,0,0], [-1,0,0], [0,1,0], [0,-1,0], [0,0,1], [0,0,-1]
+       ];
+
+       let neighbors = 0;
+       for (const [dx, dy, dz] of directions) {
+           const nx = x + dx;
+           const ny = y + dy;
+           const nz = z + dz;
+           const nPos = `${nx},${ny},${nz}`;
+           if (grid[nPos]) neighbors++;
+       }
+
+       const intensity = Math.min(1, neighbors / 6);
+       const lightness = Math.min(1, 1 - intensity + 0.3);
+       const scale = Math.max(0.2, intensity * 1.3);
+       const newColor = lightenColor(baseColor, lightness);
+
+       block.material = new THREE.MeshBasicMaterial({ color: newColor });
+       block.material.transparent = true;
+       block.material.opacity = intensity * 0.9 + 0.1;
+       block.scale.set(scale, scale, scale);
+
+   } else if (block.userData.isVoid) {
+       block.material = voidMaterial;
+   } else {
+       block.material = emptyMaterial;
+       block.scale.set(1, 1, 1);
+   }
+}
+
+// Current ruleset
+let currentRule = "conway";
+
+// Define different rulesets
+const rulesets = {
+   // Modified Conway's Game of Life: survive with 2-4 neighbors, born with 2-4
+   conway: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors >= 2 && neighbors <= 4;
+       } else {
+           return neighbors >= 2 && neighbors <= 4;
+       }
+   },
+   // Generous Crystal Growth: survive with 1-4 neighbors, born with 1-5
+   crystal: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors >= 1 && neighbors <= 4;
+       } else {
+           return neighbors >= 1 && neighbors <= 5;
+       }
+   },
+   // Expansive Coral: survive with 1-6 neighbors, born with 2-5
+   coral: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors >= 1 && neighbors <= 6;
+       } else {
+           return neighbors >= 2 && neighbors <= 5;
+       }
+   },
+   // Enhanced Caves: survive with 3-6 neighbors, born with 3-6
+   caves: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors >= 3 && neighbors <= 6;
+       } else {
+           return neighbors >= 3 && neighbors <= 6;
+       }
+   },
+   // NEW: Virus - highly contagious, spreads easily but dies in crowded areas
+   virus: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors >= 1 && neighbors <= 3;
+       } else {
+           return neighbors >= 1 && neighbors <= 2;
+       }
+   },
+   // NEW: Forest - like plant growth, needs some neighbors but not too many
+   forest: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors >= 2 && neighbors <= 5;
+       } else {
+           return neighbors === 3 || neighbors === 4;
+       }
+   },
+   // NEW: Cloud - ethereal pattern that forms in loose clusters
+   cloud: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors === 1 || neighbors === 2 || neighbors === 5;
+       } else {
+           return neighbors === 1 || neighbors === 5;
+       }
+   },
+   // NEW: Maze - tends to form connected pathways
+   maze: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors >= 1 && neighbors <= 5;
+       } else {
+           return neighbors === 3;
+       }
+   },
+   // NEW: Explosion - rapidly expands then dissipates
+   explosion: function(isAlive, neighbors) {
+       if (isAlive) {
+           return neighbors === 0 || neighbors === 2 || neighbors === 3;
+       } else {
+           return neighbors === 1 || neighbors === 2;
+       }
+   }
+};
+
+// Apply cellular automata rules
+function step() {
+   const newGrid = {};
+   const newColors = {};
+  
+   // Evaluate each position
+   for (let position in grid) {
+       const [x, y, z] = position.split(",").map(Number);
+      
+       // Skip obstacle blocks but NOT void blocks
+       if (blocks[position] && blocks[position].userData.isObstacle) {
+           newGrid[position] = grid[position];
+           continue;
+       }
+      
+       const isAlive = grid[position];
+       let neighbors = 0;
+       const neighborColors = {};
+      
+       // Check 6-neighbor connectivity (face adjacency)
+       const directions = [
+           [1,0,0], [-1,0,0], [0,1,0], [0,-1,0], [0,0,1], [0,0,-1]
+       ];
+      
+       for (let [dx, dy, dz] of directions) {
+           const nx = x + dx;
+           const ny = y + dy;
+           const nz = z + dz;
+          
+           // Check if in bounds
+           if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight && nz >= 0 && nz < gridDepth) {
+               const nPos = nx + "," + ny + "," + nz;
+              
+               // Skip if neighbor is an obstacle (but allow void neighbors)
+               if (blocks[nPos] && blocks[nPos].userData.isObstacle) {
+                   continue;
+               }
+              
+               if (grid[nPos]) {
+                   neighbors++;
+                   // Record the neighbor's color
+                   const neighborColor = blockColors[nPos];
+                   if (neighborColor) {
+                       neighborColors[neighborColor] = (neighborColors[neighborColor] || 0) + 1;
+                   }
+               }
+           }
+       }
+      
+       // Apply current ruleset
+       newGrid[position] = rulesets[currentRule](isAlive, neighbors);
+      
+       // If cell will be alive, determine its color
+       if (newGrid[position]) {
+           if (isAlive) {
+               // Keep current color if already alive
+               newColors[position] = blockColors[position];
+           } else {
+               // Choose dominant neighbor color, or default if none
+               let dominantColor = "default";
+               let maxCount = 0;
+              
+               for (const [color, count] of Object.entries(neighborColors)) {
+                   if (count > maxCount) {
+                       maxCount = count;
+                       dominantColor = color;
+                   }
+               }
+              
+               newColors[position] = dominantColor;
+           }
+       }
+   }
+  
+   // Update grid
+   grid = newGrid;
+   blockColors = newColors;
+  
+   // Update visuals
+   for (let position in grid) {
+       updateBlock(position);
+   }
+}
+
+// Raycasting for block selection
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+function onMouseClick(event) {
+   // Calculate mouse position in normalized device coordinates
+   mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+   mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  
+   // Update the picking ray with the camera and mouse position
+   raycaster.setFromCamera(mouse, camera);
+  
+   // Calculate objects intersecting the picking ray
+   const intersects = raycaster.intersectObjects(scene.children);
+  
+   if (intersects.length > 0) {
+       const position = intersects[0].object.userData.position;
+       toggleBlock(position);
+   }
+}
+
+// Event listeners
+window.addEventListener('click', onMouseClick, false);
+document.getElementById('stepBtn').addEventListener('click', step);
+
+let animationId = null;
+document.getElementById('playBtn').addEventListener('click', function() {
+   if (animationId) {
+       clearTimeout(animationId);
+       animationId = null;
+       this.textContent = 'Play';
+   } else {
+       this.textContent = 'Pause';
+       const animate = function() {
+           step();
+           animationId = setTimeout(() => {
+               requestAnimationFrame(animate);
+           }, 100); // 0.1 second per iteration
+       };
+       animate();
+   }
+});
+
+document.getElementById('resetBtn').addEventListener('click', function() {
+   initGrid();
+   loadBlocksFromJSON(blockData);
+});
+
+// Rule selection buttons
+document.getElementById('rule1').addEventListener('click', function() {
+   currentRule = "conway";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule2').addEventListener('click', function() {
+   currentRule = "crystal";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule3').addEventListener('click', function() {
+   currentRule = "coral";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule4').addEventListener('click', function() {
+   currentRule = "caves";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule5').addEventListener('click', function() {
+   currentRule = "virus";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule6').addEventListener('click', function() {
+   currentRule = "forest";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule7').addEventListener('click', function() {
+   currentRule = "cloud";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule8').addEventListener('click', function() {
+   currentRule = "maze";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('rule9').addEventListener('click', function() {
+   currentRule = "explosion";
+   setActiveRuleButton(this);
+});
+
+document.getElementById('finalizeBtn').addEventListener('click', () => {
+   processAsBuilding();
+});
+
+document.getElementById('exportBtn').addEventListener('click', () => {
+   const exporter = new THREE.GLTFExporter();
+   const exportScene = new THREE.Scene();
+
+   // Include all alive blocks (cubes)
+   for (let pos in blocks) {
+       const obj = blocks[pos];
+       if (obj && grid[pos]) {
+           exportScene.add(obj.clone());
+       }
+   }
+
+   // Also include all custom merged objects (slabs, columns, etc.)
+   scene.traverse(child => {
+       if (child.isMesh && (
+           child.userData.isMergedSlab ||
+           child.userData.isColumn ||
+           child.userData.isManualMerge ||
+           child.userData.includeInExport // catch-all
+       )) {
+           exportScene.add(child.clone());
+       }
+   });
+
+   exporter.parse(exportScene, result => {
+       const blob = new Blob([result], { type: 'model/gltf-binary' });
+       saveAs(blob, "simulation.glb");
+   }, { binary: true });
+});
+
+
+
+document.getElementById('exportTimelineBtn').addEventListener('click', () => {
+    exportSimulationTimeline(); // Make sure this function is defined above this line
+});
+
+
+document.getElementById('finalizeBtn')
+
+function setActiveRuleButton(button) {
+   // Remove active class from all rule buttons
+   document.querySelectorAll('.ruleBtn').forEach(btn => {
+       btn.classList.remove('active');
+   });
+   // Add active class to the clicked button
+   button.classList.add('active');
+}
+
+// Handle window resize
+window.addEventListener('resize', function () {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Set up initial blocks from JSON data
+const blockData = {
+ "blockInfo":  
+ [
+  {
+    "blockID": 1,
+    "blockColor": "red",
+    "blockHeight": 4,
+    "position": {
+      "x": 10,
+      "y": -12,
+      "z": 5
+    }
+  },
+  {
+    "blockID": 2,
+    "blockColor": "blue",
+    "blockHeight": 7,
+    "position": {
+      "x": 10,
+      "y": -15,
+      "z": 7
+    }
+  },
+  {
+    "blockID": 3,
+    "blockColor": "green",
+    "blockHeight": 4,
+    "position": {
+      "x": 17,
+      "y": -17,
+      "z": 4
+    }
+  },
+  {
+    "blockID": 4,
+    "blockColor": "yellow",
+    "blockHeight": 7,
+    "position": {
+      "x": 16,
+      "y": -14,
+      "z": 8
+    }
+  },
+  {
+    "blockID": 5,
+    "blockColor": "purple",
+    "blockHeight": 3,
+    "position": {
+      "x": 16,
+      "y": -12,
+      "z": 4
+    }
+  },
+  {
+    "blockID": 6,
+    "blockColor": "orange",
+    "blockHeight": 4,
+    "position": {
+      "x": 17,
+      "y": -12,
+      "z": 5
+    }
+  },
+  {
+    "blockID": 7,
+    "blockColor": "cyan",
+    "blockHeight": 4,
+    "position": {
+      "x": 11,
+      "y": -9,
+      "z": 4
+    }
+  },
+  {
+    "blockID": 8,
+    "blockColor": "magenta",
+    "blockHeight": 4,
+    "position": {
+      "x": 18,
+      "y": -16,
+      "z": 4
+    }
+  },
+  {
+    "blockID": 9,
+    "blockColor": "lime",
+    "blockHeight": 3,
+    "position": {
+      "x": 7,
+      "y": -13,
+      "z": 3
+    }
+  },
+  {
+    "blockID": 10,
+    "blockColor": "pink",
+    "blockHeight": 4,
+    "position": {
+      "x": 15,
+      "y": -11,
+      "z": 4
+    }
+  }
+]
+};
+
+function withinBounds(x, y, z) {
+   return x >= 0 && x < gridWidth &&
+          y >= 0 && y < gridHeight &&
+          z >= 0 && z < gridDepth;
+}
+
+function isObstacleOrVoid(pos) {
+   return blocks[pos] && (blocks[pos].userData.isObstacle || blocks[pos].userData.isVoid);
+}
+
+function lightenColor(hex, factor) {
+   if (typeof hex !== 'number') {
+     console.warn("Invalid color input:", hex);
+     return 0xffffff; // fallback to white
+   }
+
+   const r = (hex >> 16) & 0xff;
+   const g = (hex >> 8) & 0xff;
+   const b = hex & 0xff;
+
+   const newR = Math.min(255, Math.floor(r + (255 - r) * factor));
+   const newG = Math.min(255, Math.floor(g + (255 - g) * factor));
+   const newB = Math.min(255, Math.floor(b + (255 - b) * factor));
+
+   return (newR << 16) | (newG << 8) | newB;
+}
+
+
+function loadBlocksFromJSON(jsonData) {
+   // First clear the grid (but not obstacles)
+   for (let position in grid) {
+       if (blocks[position] && (blocks[position].userData.isObstacle || blocks[position].userData.isVoid)) {
+           continue;
+       }
+       grid[position] = false;
+       updateBlock(position);
+   }
+
+   // Add blocks from JSON
+   jsonData.blockInfo.forEach(block => {
+       // NEW: safer grid mapping
+const gridX = Math.max(0, Math.min(gridWidth - 1, Math.floor(block.position.x)));
+const gridY = Math.max(0, Math.min(gridHeight - 1, Math.floor(block.position.y + gridHeight / 2)));
+const gridZ = Math.max(0, Math.min(gridDepth - 1, Math.floor(block.position.z)));
+
+
+       if (gridX >= 0 && gridX < gridWidth &&
+           gridY >= 0 && gridY < gridHeight &&
+           gridZ >= 0 && gridZ < gridDepth) {
+
+           const pos = `${gridX},${gridY},${gridZ}`;
+
+           if (blocks[pos] && (blocks[pos].userData.isObstacle || blocks[pos].userData.isVoid)) {
+               return;
+           }
+
+           grid[pos] = true;
+           blockColors[pos] = block.blockColor;
+           updateBlock(pos);
+
+           const centerMesh = blocks[pos];
+           if (centerMesh) {
+               centerMesh.scale.set(1.2, 1.2, 1.2); // Slightly bigger center block
+           }
+
+           const maxSpread = Math.min(block.blockHeight / 2, 3);
+           for (let i = 0; i < maxSpread; i++) {
+               const dx = Math.floor(Math.random() * 3) - 1;
+               const dy = Math.floor(Math.random() * 3) - 1;
+               const dz = Math.floor(Math.random() * 3) - 1;
+
+               const nx = gridX + dx;
+               const ny = gridY + dy;
+               const nz = gridZ + dz;
+
+               if (withinBounds(nx, ny, nz)) {
+                   const newPos = `${nx},${ny},${nz}`;
+                   if (!isObstacleOrVoid(newPos)) {
+                       grid[newPos] = true;
+                       blockColors[newPos] = block.blockColor;
+                       updateBlock(newPos);
+
+                       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                       const maxDist = maxSpread; // for easier reading
+                       const intensity = 1 - dist / maxDist;
+
+                       const scale = Math.max(0.1, intensity * 3); // Boost size difference
+                       const lightness = Math.min(1, 1 - intensity + 0.3); // Adjust `0.3` to increase lightness at edges
+
+                       // Get base material and color
+                       const baseMaterial = blockMaterials[block.blockColor] || blockMaterials["default"];
+                       const baseColor = baseMaterial.color.getHex();
+                       const newColor = lightenColor(baseColor, lightness);
+
+                       const mesh = blocks[newPos];
+                       if (mesh) {
+                           mesh.scale.set(scale, scale, scale);
+                           mesh.material = new THREE.MeshBasicMaterial({ color: newColor });
+
+                           // Optional opacity boost
+                           mesh.material.transparent = true;
+                           mesh.material.opacity = intensity * 0.9 + 0.2; // 1 near center, fades toward 0.1
+                       }
+
+
+                   }
+               }
+           }
+       }
+   });
+}
+
+function processAsBuilding() {
+   const floorUsage = new Set();
+
+   // 0. Remove tiny cubes before processing (too small to be architecture)
+for (let pos in blocks) {
+    const block = blocks[pos];
+    if (grid[pos] && block.scale.x < 0.8) {
+        scene.remove(block);
+        delete blocks[pos];
+        grid[pos] = false;
+    }
+}
+
+// 🚮 Remove all slab-like meshes (both original and merged)
+scene.children = scene.children.filter(obj => {
+    if (obj.userData?.isObstacle || obj.userData?.isMergedSlab) {
+        scene.remove(obj);
+        return false;
+    }
+    return true;
+});
+collisionObjects = [];
+
+
+// 4.5 Convert all remaining alive blocks to solid white
+for (let pos in grid) {
+    if (!grid[pos]) continue;
+    const block = blocks[pos];
+    if (!block) continue;
+
+    block.material = new THREE.MeshStandardMaterial({
+        color: 0xe8e8e8, // white-ish color
+        roughness: 0.7,
+        metalness: 2
+    });
+    block.material.transparent = false;
+}
+
+
+   // 5. Remove all unused wireframe blocks (not alive, not obstacle/void)
+   for (let pos in blocks) {
+       const block = blocks[pos];
+       if (!grid[pos] && !block.userData.isObstacle && !block.userData.isVoid) {
+           scene.remove(block);
+           delete blocks[pos];
+       }
+   }
+
+// 6. Merge adjacent blocks into larger segments
+mergeAdjacentBlocks();
+}
+
+function mergeAdjacentBlocks() {
+    const visited = new Set();
+    const mergeTolerance = 0.2;
+    const directions = [
+        [1, 0, 0], // X+
+        [0, 0, 1]  // Z+
+    ];
+
+    for (let pos in grid) {
+        if (!grid[pos] || visited.has(pos)) continue;
+
+        const [x, y, z] = pos.split(',').map(Number);
+        const key = `${x},${y},${z}`;
+        const block = blocks[key];
+        if (!block) continue;
+
+        const baseSize = block.scale.x;
+        const baseHeight = block.scale.y;
+        const baseMat = block.material;
+
+        const group = [key];
+        visited.add(key);
+
+        for (let [dx, dy, dz] of directions) {
+            let nx = x + dx;
+            let ny = y + dy;
+            let nz = z + dz;
+            let neighborKey = `${nx},${ny},${nz}`;
+
+            while (
+                grid[neighborKey] &&
+                !visited.has(neighborKey) &&
+                blocks[neighborKey]
+            ) {
+                const nBlock = blocks[neighborKey];
+                const sizeMatch =
+                    Math.abs(nBlock.scale.x - baseSize) < mergeTolerance &&
+                    Math.abs(nBlock.scale.y - baseHeight) < mergeTolerance &&
+                    Math.abs(nBlock.scale.z - baseSize) < mergeTolerance;
+                const sameMaterial =
+                    nBlock.material.color.getHex() === baseMat.color.getHex();
+
+                if (!sizeMatch || !sameMaterial) break;
+
+                group.push(neighborKey);
+                visited.add(neighborKey);
+
+                nx += dx;
+                ny += dy;
+                nz += dz;
+                neighborKey = `${nx},${ny},${nz}`;
+            }
+        }
+
+        if (group.length > 1) {
+            const geometries = [];
+
+            for (let gKey of group) {
+                const [gx, gy, gz] = gKey.split(',').map(Number);
+                const originalBlock = blocks[gKey];
+                const originalScale = originalBlock.scale.y;
+                const flattenedHeight = originalScale * 0.1;
+
+                const geo = new THREE.BoxGeometry(baseSize, flattenedHeight, baseSize);
+                geo.translate(
+                    gx * spacing - (gridWidth * spacing / 2) + spacing / 2,
+                    gy * spacing - (gridHeight * spacing / 2) + flattenedHeight / 2,
+                    gz * spacing - (gridDepth * spacing / 2) + spacing / 2
+                );
+
+                geometries.push(geo);
+                scene.remove(blocks[gKey]);
+                delete blocks[gKey];
+                grid[gKey] = false;
+            }
+
+            const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries);
+            const mergedMesh = new THREE.Mesh(mergedGeometry, baseMat);
+            mergedMesh.userData.isMergedSlab = true;
+            scene.add(mergedMesh);
+        }
+    }
+}
+
+    // Create merged slab for each level
+    for (let yLevel in flattenedByY) {
+        const geos = flattenedByY[yLevel];
+        const mergedGeo = THREE.BufferGeometryUtils.mergeBufferGeometries(geos);
+        const slab = new THREE.Mesh(
+            mergedGeo,
+            new THREE.MeshStandardMaterial({ color: 0x999999, metalness: 0, roughness: 1 })
+        );
+        slab.userData.isMergedSlab = true;
+        scene.add(slab);
+    }
+
+
+function extractColorsFromTexture(texture, count = 10) {
+   const image = texture.image;
+   const canvas = document.createElement('canvas');
+   canvas.width = image.width;
+   canvas.height = image.height;
+
+   const ctx = canvas.getContext('2d');
+   ctx.drawImage(image, 0, 0);
+
+   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+   const colorMap = new Map();
+   for (let i = 0; i < imageData.length; i += 4) {
+       const r = imageData[i];
+       const g = imageData[i + 1];
+       const b = imageData[i + 2];
+       const colorKey = `${r},${g},${b}`;
+       colorMap.set(colorKey, (colorMap.get(colorKey) || 0) + 1);
+   }
+
+   const sortedColors = [...colorMap.entries()].sort((a, b) => b[1] - a[1]);
+   const topColors = sortedColors.slice(0, count).map(([rgb]) => {
+       const [r, g, b] = rgb.split(',').map(Number);
+       return (r << 16) | (g << 8) | b;
+   });
+
+   return topColors;
+}
+
+
+function startScene() {
+  initGrid();
+  loadBlocksFromJSON(blockData);
+  render();
+}
+
+function render() {
+  requestAnimationFrame(render);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+</script>
+</body>
+</html>
